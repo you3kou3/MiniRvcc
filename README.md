@@ -3,7 +3,7 @@
 
 This project is a minimal custom LLVM backend implementation for a 32-bit RISC-V-like target named **MiniRvcc**.
 
-MiniRvcc is designed as a **learning-oriented backend** for compiling programs that run on a custom soft processor implemented in the [`learn_simple_soc`](https://github.com/your-repo/learn_simple_soc) project.  
+MiniRvcc is designed as a **learning-oriented backend** for compiling programs that run on a custom soft processor implemented in the [`learn_simple_soc`](https://github.com/you3kou3/learn_simple_soc) project.  
 Its goal is to serve as an educational reference for how to integrate a custom target into LLVM and produce executable code for a specific SoC environment.
 
 When built correctly, running the following command:
