@@ -774,7 +774,7 @@ void MiniRvccInstrInfo::loadRegFromStackSlot(
   /*}*/
 }
 
-MachineInstr *MiniRvccInstrInfo::foldMemoryOperandImpl(
+/*MachineInstr *MiniRvccInstrInfo::foldMemoryOperandImpl(
     MachineFunction &MF, MachineInstr &MI, ArrayRef<unsigned> Ops,
     MachineBasicBlock::iterator InsertPt, int FrameIndex, LiveIntervals *LIS,
     VirtRegMap *VRM) const {
@@ -830,7 +830,7 @@ MachineInstr *MiniRvccInstrInfo::foldMemoryOperandImpl(
       .addFrameIndex(FrameIndex)
       .addImm(0)
       .addMemOperand(MMO);
-}
+}*/
 
 void MiniRvccInstrInfo::movImm(MachineBasicBlock &MBB,
                             MachineBasicBlock::iterator MBBI,
@@ -949,63 +949,142 @@ MiniRvccCC::CondCode MiniRvccCC::getOppositeBranchCondition(MiniRvccCC::CondCode
   }
 }
 
-bool MiniRvccInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
-                                   MachineBasicBlock *&TBB,
-                                   MachineBasicBlock *&FBB,
-                                   SmallVectorImpl<MachineOperand> &Cond,
-                                   bool AllowModify) const {
+
+///
+/// Analyze the branching code at the end of MBB, returning
+/// true if it cannot be understood (e.g. it's a switch dispatch or isn't
+/// implemented for a target).  Upon success, this returns false and returns
+/// with the following information in various cases:
+///
+/// 1. If this block ends with no branches (it just falls through to its succ)
+///    just return false, leaving TBB/FBB null.
+/// 2. If this block ends with only an unconditional branch, it sets TBB to be
+///    the destination block.
+/// 3. If this block ends with a conditional branch and it falls through to a
+///    successor block, it sets TBB to be the branch destination block and a
+///    list of operands that evaluate the condition. These operands can be
+///    passed to other TargetInstrInfo methods to create new branches.
+/// 4. If this block ends with a conditional branch followed by an
+///    unconditional branch, it returns the 'true' destination in TBB, the
+///    'false' destination in FBB, and a list of operands that evaluate the
+///    condition.  These operands can be passed to other TargetInstrInfo
+///    methods to create new branches.
+///
+/// Note that removeBranch and insertBranch must be implemented to support
+/// cases where this method returns success.
+///
+/// If AllowModify is true, then this routine is allowed to modify the basic
+/// block (e.g. delete instructions after the unconditional branch).
+///
+/// The CFG information in MBB.Predecessors and MBB.Successors must be valid
+/// before calling this function.
+/// 
+bool MiniRvccInstrInfo::analyzeBranch(
+  MachineBasicBlock &MBB,
+  MachineBasicBlock *&TBB,
+  MachineBasicBlock *&FBB,
+  SmallVectorImpl<MachineOperand> &Cond,
+  bool AllowModify) const 
+{
   TBB = FBB = nullptr;
   Cond.clear();
 
+  // 最後の非デバッグ命令を取得
   // If the block has no terminators, it just falls into the block after it.
   MachineBasicBlock::iterator I = MBB.getLastNonDebugInstr();
+
+  // ブロック末尾が分岐命令でなければ、フォールスルー（fallthrough）扱い
   if (I == MBB.end() || !isUnpredicatedTerminator(*I))
     return false;
 
+
+  // Terminator（分岐命令）数をカウントしつつ、
+  // 最初の無条件 or 間接分岐を探す
   // Count the number of terminators and find the first unconditional or
   // indirect branch.
   MachineBasicBlock::iterator FirstUncondOrIndirectBr = MBB.end();
   int NumTerminators = 0;
-  for (auto J = I.getReverse(); J != MBB.rend() && isUnpredicatedTerminator(*J);
-       J++) {
+  for (auto J = I.getReverse(); J != MBB.rend() && isUnpredicatedTerminator(*J); J++) {
     NumTerminators++;
-    if (J->getDesc().isUnconditionalBranch() ||
-        J->getDesc().isIndirectBranch()) {
+    //--- 以下のようなelse分岐を探す
+    //if (cond)
+    // goto A;
+    //else
+    // goto B;
+    if (J->getDesc().isUnconditionalBranch() || J->getDesc().isIndirectBranch()) {
       FirstUncondOrIndirectBr = J.getReverse();
     }
   }
 
+  // AllowModifyが真の時の末尾命令削除は通常不要のためコメントアウト
   // If AllowModify is true, we can erase any terminators after
   // FirstUncondOrIndirectBR.
-  if (AllowModify && FirstUncondOrIndirectBr != MBB.end()) {
+  /*if (AllowModify && FirstUncondOrIndirectBr != MBB.end()) {
     while (std::next(FirstUncondOrIndirectBr) != MBB.end()) {
       std::next(FirstUncondOrIndirectBr)->eraseFromParent();
       NumTerminators--;
     }
     I = FirstUncondOrIndirectBr;
-  }
+  }*/
 
+  // 間接分岐はreturn相当なので解析不能としてtrueを返す
   // We can't handle blocks that end in an indirect branch.
+  //-------------------------------------
+  //void foo(void (*func_ptr)()) {
+  //    // 関数ポインタを使って間接的にジャンプ（関数呼び出し）
+  //    func_ptr();
+  //}
+  //-------------------------------------
   if (I->getDesc().isIndirectBranch())
     return true;
 
+  // RV32Iの設計上、分岐命令は最大2つまでを想定
   // We can't handle blocks with more than 2 terminators.
   if (NumTerminators > 2)
     return true;
 
+  // 単一の無条件分岐（例：goto）
+  //-------------------------------------
+  //void foo() {
+  //    goto LABEL;  // 無条件ジャンプ
+  //
+  //LABEL:
+  //    // ラベル先の処理
+  //    return;
+  //}
+  //-------------------------------------
   // Handle a single unconditional branch.
   if (NumTerminators == 1 && I->getDesc().isUnconditionalBranch()) {
     TBB = getBranchDestBlock(*I);
     return false;
   }
 
+  // 単一の条件分岐（例：if）
   // Handle a single conditional branch.
+  //-------------------------------------
+  //void foo(int x) {
+  //    if (x > 0) {
+  //        goto POSITIVE;  // 条件付きジャンプ
+  //    }
+  //    // 条件が偽のときの処理
+  //    return;
+  //
+  //POSITIVE:
+  //    // 条件が真のときの処理
+  //    return;
+  //}
+  //-------------------------------------
   if (NumTerminators == 1 && I->getDesc().isConditionalBranch()) {
     parseCondBranch(*I, TBB, Cond);
     return false;
   }
 
+  // 条件分岐の後に無条件分岐（if-else構造）
   // Handle a conditional branch followed by an unconditional branch.
+  //-------------------------------------
+  //beq → 条件分岐（TrueDest = A）
+  //jal → 無条件分岐（FalseDest = B）
+  //-------------------------------------
   if (NumTerminators == 2 && std::prev(I)->getDesc().isConditionalBranch() &&
       I->getDesc().isUnconditionalBranch()) {
     parseCondBranch(*std::prev(I), TBB, Cond);
@@ -1013,31 +1092,56 @@ bool MiniRvccInstrInfo::analyzeBranch(MachineBasicBlock &MBB,
     return false;
   }
 
+  // それ以外の複雑な分岐は未対応（trueを返してエラー扱い）
   // Otherwise, we can't handle this.
   return true;
 }
 
+
+///
+/// Remove the branching code at the end of the specific MBB.
+/// This is only invoked in cases where analyzeBranch returns success. It
+/// returns the number of instructions that were removed.
+/// If \p BytesRemoved is non-null, report the change in code size from the
+/// removed instructions.
+/// 
+/// 以下のようなブロック順の時に、本関数が呼び出される
+/// 戻り値の数だけ分岐命令があり、それを削除対象とする
+///--------------------------------------
+//bb1:
+//  ...
+//  br bb2  ← 条件なしジャンプ
+//
+//bb2:
+//  ...
+///--------------------------------------
 unsigned MiniRvccInstrInfo::removeBranch(MachineBasicBlock &MBB,
-                                      int *BytesRemoved) const {
+                                         int *BytesRemoved) const 
+{
   if (BytesRemoved)
     *BytesRemoved = 0;
+
+  // ブロックの最後の非デバッグ命令を取得
   MachineBasicBlock::iterator I = MBB.getLastNonDebugInstr();
   if (I == MBB.end())
     return 0;
 
+  // 最後の命令が分岐でなければ削除するものはない
   if (!I->getDesc().isUnconditionalBranch() &&
       !I->getDesc().isConditionalBranch())
     return 0;
 
+  // 最後の分岐命令（無条件または条件）を削除
   // Remove the branch.
   if (BytesRemoved)
     *BytesRemoved += getInstSizeInBytes(*I);
   I->eraseFromParent();
 
+  // 一つ前に戻ってさらに条件分岐があれば、それも削除
   I = MBB.end();
-
   if (I == MBB.begin())
     return 1;
+
   --I;
   if (!I->getDesc().isConditionalBranch())
     return 1;
@@ -1048,6 +1152,8 @@ unsigned MiniRvccInstrInfo::removeBranch(MachineBasicBlock &MBB,
   I->eraseFromParent();
   return 2;
 }
+
+
 
 // Inserts a branch into the end of the specific MachineBasicBlock, returning
 // the number of instructions inserted.
@@ -1088,16 +1194,30 @@ unsigned MiniRvccInstrInfo::insertBranch(
   return 2;
 }
 
+
+///
+/// Insert an unconditional indirect branch at the end of \p MBB to \p
+/// NewDestBB. Optionally, insert the clobbered register restoring in \p
+/// RestoreBB. \p BrOffset indicates the offset of \p NewDestBB relative to
+/// the offset of the position to insert the new branch.
+/// 
+/// LLVM がコード生成フェーズで「通常のジャンプが届かない場所へ分岐する」
+//  必要があるときに使う、間接ジャンプ命令列の挿入です。
+/// 
 void MiniRvccInstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
-                                          MachineBasicBlock &DestBB,
-                                          MachineBasicBlock &RestoreBB,
-                                          const DebugLoc &DL, int64_t BrOffset,
-                                          RegScavenger *RS) const {
-  assert(RS && "RegScavenger required for long branching");
-  assert(MBB.empty() &&
-         "new block should be inserted for expanding unconditional branch");
+                                             MachineBasicBlock &DestBB,
+                                             MachineBasicBlock &RestoreBB,
+                                             const DebugLoc &DL, int64_t BrOffset,
+                                             RegScavenger *RS) const 
+{
+
+  /*
+  //assert(RS && "RegScavenger required for long branching");
+  assert(MBB.empty() && "new block should be inserted for expanding unconditional branch");
   assert(MBB.pred_size() == 1);
 
+
+  // MachineFunctionとレジスタ管理情報を取得
   MachineFunction *MF = MBB.getParent();
   MachineRegisterInfo &MRI = MF->getRegInfo();
 
@@ -1123,15 +1243,44 @@ void MiniRvccInstrInfo::insertIndirectBranch(MachineBasicBlock &MBB,
   MRI.replaceRegWith(ScratchReg, Scav);
   MRI.clearVirtRegs();
   RS->setRegUsed(Scav);
+  */
+
+  // lui ScratchReg, %hi(DestBB)
+  BuildMI(MBB, MBB.end(), DL, get(MiniRvcc::LUI), ScratchReg)
+      .addGlobalAddress(DestBB.getSymbol(), 0, RISCVII::MO_HI);
+
+  // addi ScratchReg, ScratchReg, %lo(DestBB)
+  BuildMI(MBB, MBB.end(), DL, get(MiniRvcc::ADDI), ScratchReg)
+      .addReg(ScratchReg)
+      .addGlobalAddress(DestBB.getSymbol(), 0, RISCVII::MO_LO);
+
+  // jalr x0, 0(ScratchReg)
+  BuildMI(MBB, MBB.end(), DL, get(MiniRvcc::JALR))
+      .addReg(RISCV::X0)       // 戻り先は使わない（破棄）
+      .addReg(ScratchReg)      // ジャンプ先
+      .addImm(0);              // オフセット 0
+
+  return MBB.end();
 }
 
+
+///
+/// Reverses the branch condition of the specified condition list,
+/// returning false on success and true if it cannot be reversed.
+///
+/// 条件分岐の条件を反転するための関数
+/// RV32Iのみ対応にしたい場合、使える分岐は BEQ/BNE/BLT/BGE/BLTU/BGEU の6種類に限定
+/// 上記6種類だけ扱っていれば、今のコードでそのまま対応可能。
+///
 bool MiniRvccInstrInfo::reverseBranchCondition(
-    SmallVectorImpl<MachineOperand> &Cond) const {
+    SmallVectorImpl<MachineOperand> &Cond) const 
+{
   assert((Cond.size() == 3) && "Invalid branch condition!");
   auto CC = static_cast<MiniRvccCC::CondCode>(Cond[0].getImm());
   Cond[0].setImm(getOppositeBranchCondition(CC));
   return false;
 }
+
 
 MachineBasicBlock *
 MiniRvccInstrInfo::getBranchDestBlock(const MachineInstr &MI) const {

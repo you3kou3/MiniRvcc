@@ -78,13 +78,13 @@ public:
                              const TargetRegisterClass *RC,
                              const TargetRegisterInfo *TRI) const override;
 
-   using TargetInstrInfo::foldMemoryOperandImpl;
+   /*using TargetInstrInfo::foldMemoryOperandImpl;
    MachineInstr *foldMemoryOperandImpl(MachineFunction &MF, MachineInstr &MI,
                                        ArrayRef<unsigned> Ops,
                                        MachineBasicBlock::iterator InsertPt,
                                        int FrameIndex,
                                        LiveIntervals *LIS = nullptr,
-                                       VirtRegMap *VRM = nullptr) const override;
+                                       VirtRegMap *VRM = nullptr) const override;*/
 
    // Materializes the given integer Val into DstReg.
    //void movImm(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
